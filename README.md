@@ -1,2 +1,2 @@
 # dhriv
-Programming language oop horizontal, vertical, diagonal
+language oop horizontal, vertical, diagonal
