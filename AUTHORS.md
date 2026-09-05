@@ -20,6 +20,7 @@ Titolare esclusivo di tutti i diritti d'autore, morali ed economici
 
 Le intelligenze artificiali elencate hanno operato come strumenti sotto la
 direzione creativa di Francesco Simeoni. La paternita' dell'opera e' sua e
-soltanto sua, **inalienabile e imprescrittibile** ai sensi della legge
+soltanto sua: un diritto **inalienabile, imprescrittibile, irrinunciabile,
+inviolabile e immodificabile** ai sensi della legge
 italiana. La cronologia dei commit e' parte integrante dell'opera e non puo'
 essere eliminata o riattribuita.
