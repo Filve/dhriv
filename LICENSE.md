@@ -18,16 +18,18 @@ sono stati utilizzati dall'autore come strumenti di assistenza alla
 programmazione, sotto la sua direzione creativa e le sue scelte progettuali.
 La titolarita' dei diritti resta integralmente in capo a Francesco Simeoni.
 
-### Diritto morale d'autore (inalienabile, imprescrittibile, inviolabile)
+### Diritti inviolabili (inalienabili, imprescrittibili, irrinunciabili, inviolabili, immodificabili)
 
 - **Art. 20, Legge 22 aprile 1941, n. 633** (Legge sul diritto d'autore):
   l'autore conserva il diritto di rivendicare la **paternita' dell'opera** e
   di opporsi a qualsiasi deformazione, mutilazione o altra modificazione
   dell'opera stessa che possa essere di pregiudizio al suo onore o alla sua
   reputazione.
-- **Art. 22, L. 633/1941**: i diritti morali sono **inalienabili** — non
-  possono essere ceduti, venduti ne' trasferiti, nemmeno con contratto, e
-  sono **imprescrittibili**: non si estinguono col tempo.
+- **Art. 22, L. 633/1941**: i diritti morali sono **inalienabili e
+  irrinunciabili** — non possono essere ceduti, venduti, trasferiti ne'
+  oggetto di rinuncia, nemmeno con contratto — e sono **imprescrittibili**:
+  non si estinguono col tempo. Sono **inviolabili e immodificabili**: nessun
+  atto di terzi puo' comprimerli o alterarne il contenuto.
 - **Art. 2577 Codice Civile**: l'autore ha il diritto esclusivo di pubblicare
   l'opera e di utilizzarla economicamente; puo' sempre rivendicarne la
   paternita'.
