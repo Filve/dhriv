@@ -15,6 +15,7 @@ Titolare esclusivo di tutti i diritti d'autore, morali ed economici
 | **Claude** | Anthropic | Modello alla base delle sessioni Copilot di sviluppo |
 | OpenAI GPT | OpenAI | Assistenza alla programmazione ove utilizzato |
 | Lovable | Lovable | Assistenza alla programmazione ove utilizzato |
+| **Gemini** | Google | Modello alla base delle sessioni di sviluppo |
 
 ## Dichiarazione
 

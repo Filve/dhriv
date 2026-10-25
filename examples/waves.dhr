@@ -1,0 +1,17 @@
+// Onde di frequenza ed elettromagnetiche in Dhriv
+wave wifi = 2.4e9
+print(wifi.band_name)
+print(wifi.wavelength_meters)
+print(band(433.92e6))
+print(round(fspl(2.4e9, 100), 2))
+
+// Interferenza: due onde sovrapposte con <->
+wave a = wave_new(1000)
+wave b = wave_new(1500)
+let mix = a <-> b
+print(type_of(mix))
+
+// Trasmissione di testo come onda modulata, con rumore (FEC Hamming + CRC32)
+let rx = em_transmit("ciao dhriv", 12)
+print(rx.ok)
+print(rx.text)

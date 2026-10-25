@@ -1,0 +1,17 @@
+// Dhriv in italiano: stesse regole, parole chiave italiane.
+entita Animale {
+    sia nome = "?"
+    funzione init(nome) { self.nome = nome }
+    funzione saluta() { ritorna "Ciao, sono " + self.nome }
+}
+
+entita Cane verticale Animale { }
+
+sia c = nuovo Cane("Rex")
+stampa(c.saluta())
+
+funzione fib(n) {
+    se n < 2 { ritorna n }
+    ritorna fib(n - 1) + fib(n - 2)
+}
+stampa(fib(25))

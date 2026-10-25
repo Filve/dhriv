@@ -1,0 +1,43 @@
+// Dhriv — OOP Tri-Assiale: Verticale (vertical), Orizzontale (horizontal), Diagonale (diagonal)
+
+entity Machine {
+    let name = "generic"
+    let power = 10
+    fn init(name, power) { self.name = name; self.power = power }
+    fn describe() { return self.name + " [" + str(self.power) + "W]" }
+}
+
+entity Server vertical Machine {
+    fn serve() { return self.name + " serve richieste" }
+}
+
+entity Telemetry {
+    fn report() { return "telemetria di " + self.name }
+}
+
+entity Kernel {
+    fn syscall(n) { return "syscall#" + str(n) }
+}
+
+// Asse verticale (eredita Machine) + orizzontale (Telemetry) + diagonale (Kernel)
+entity EdgeNode vertical Server horizontal Telemetry diagonal Kernel { }
+
+let n = new EdgeNode("edge-01", 250)
+print(n.describe())
+print(n.serve())
+print(n.report())
+print(n.syscall(7))
+
+// Pipe verticale: il valore scende nella funzione
+fn doppio(x) { return x * 2 }
+fn piu(x, k) { return x + k }
+print(21 |> doppio |> piu(0))
+
+// Ricerca su larga scala: orizzontale, verticale, diagonale
+scale_register("hw-a", 0, 0, ["bare-metal"])
+scale_register("kernel-a", 1, 1, ["syscall"])
+scale_register("db-b", 2, 2, ["sql", "cache"])
+scale_register("app-c", 3, 1, ["http"])
+print(search_h(1, "syscall")[0].node_id)
+print(search_v(2, "sql")[0].node_id)
+print(search_d(0, 0, "cache")[0].node_id)
