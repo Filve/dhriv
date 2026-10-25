@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+*.exe
+*.out
+.dhriv_state/
+dist_packages/
+build_native/
+*.dhrb
+*.dhrp
+*.wav
+*.iq
+.DS_Store
