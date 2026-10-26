@@ -4,7 +4,9 @@ lexer.py — Analizzatore Lessicale Poliglotta e Tri-Assiale del linguaggio Dhri
 Progettato per:
 1. Riconoscere la sintassi canonica di Dhriv orientata agli oggetti su 3 assi
    (Verticale `|>`, Orizzontale `<->`, Diagonale `</>`) e le primitive di Onde EM.
-2. Essere nativamente retrocompatibile con ogni lingua umana (Italiano, Inglese,
+2. Supportare letterali binari (`0b1010_0110`), esadecimali (`0xFF`), ottali (`0o77`)
+   e operatori bitwise nativi (`&`, `|`, `^`, `~`, `<<`, `>>`).
+3. Essere nativamente retrocompatibile con ogni lingua umana (Italiano, Inglese,
    Spagnolo, Francese) e con le parole chiave classiche dei linguaggi legacy
    (C/Java/C#/JS/Python), normalizzandole verso i Token canonici di Dhriv.
 
@@ -55,14 +57,21 @@ class TokenType(str, Enum):
     RESONATE_HORIZONTAL = "RESONATE_HORIZONTAL"  # <->
     BRIDGE_DIAGONAL = "BRIDGE_DIAGONAL"       # </>
 
-    # Operatori aritmetici, logici e di confronto
+    # Operatori aritmetici, logici, bitwise e di confronto
     PLUS = "PLUS"                 # +
     MINUS = "MINUS"               # -
     STAR = "STAR"                 # *
     POW = "POW"                   # **
     SLASH = "SLASH"               # /
     PERCENT = "PERCENT"           # %
+    BIT_AND = "BIT_AND"           # &
+    BIT_OR = "BIT_OR"             # |
+    BIT_XOR = "BIT_XOR"           # ^
+    BIT_NOT = "BIT_NOT"           # ~
+    SHL = "SHL"                   # <<
+    SHR = "SHR"                   # >>
     ASSIGN = "ASSIGN"             # =
+    FAT_ARROW = "FAT_ARROW"       # =>
     EQ = "EQ"                     # ==
     NEQ = "NEQ"                   # !=
     LT = "LT"                     # <
@@ -286,7 +295,7 @@ class DhrivLexer:
                 tokens.append(Token(TokenType.BRIDGE_DIAGONAL, "</>", None, start_line, start_col))
                 continue
 
-            # Operatore Verticale `|>` o OR logico `||`
+            # Operatore Verticale `|>`, OR logico `||` o OR bitwise `|`
             if ch == "|":
                 self._advance()
                 if self._peek() == ">":
@@ -296,13 +305,16 @@ class DhrivLexer:
                     self._advance()
                     tokens.append(Token(TokenType.OR, "||", None, start_line, start_col))
                 else:
-                    raise DhrivSyntaxError("Carattere '|' isolato non valido (usa '|>' o '||').", start_line, start_col)
+                    tokens.append(Token(TokenType.BIT_OR, "|", None, start_line, start_col))
                 continue
 
-            if ch == "&" and self._peek(1) == "&":
+            if ch == "&":
                 self._advance()
-                self._advance()
-                tokens.append(Token(TokenType.AND, "&&", None, start_line, start_col))
+                if self._peek() == "&":
+                    self._advance()
+                    tokens.append(Token(TokenType.AND, "&&", None, start_line, start_col))
+                else:
+                    tokens.append(Token(TokenType.BIT_AND, "&", None, start_line, start_col))
                 continue
 
             # Stringhe `"..."` o `'...'`
@@ -310,7 +322,7 @@ class DhrivLexer:
                 tokens.append(self._read_string(ch, start_line, start_col))
                 continue
 
-            # Numeri interi e float
+            # Numeri interi (decimali, binari 0b, esadecimali 0x, ottali 0o) e float
             if ch.isdigit():
                 tokens.append(self._read_number(start_line, start_col))
                 continue
@@ -332,6 +344,9 @@ class DhrivLexer:
                 if self._peek() == "=":
                     self._advance()
                     tokens.append(Token(TokenType.EQ, "==", None, start_line, start_col))
+                elif self._peek() == ">":
+                    self._advance()
+                    tokens.append(Token(TokenType.FAT_ARROW, "=>", None, start_line, start_col))
                 else:
                     tokens.append(Token(TokenType.ASSIGN, "=", None, start_line, start_col))
             elif ch == "!":
@@ -344,14 +359,24 @@ class DhrivLexer:
                 if self._peek() == "=":
                     self._advance()
                     tokens.append(Token(TokenType.LTE, "<=", None, start_line, start_col))
+                elif self._peek() == "<":
+                    self._advance()
+                    tokens.append(Token(TokenType.SHL, "<<", None, start_line, start_col))
                 else:
                     tokens.append(Token(TokenType.LT, "<", None, start_line, start_col))
             elif ch == ">":
                 if self._peek() == "=":
                     self._advance()
                     tokens.append(Token(TokenType.GTE, ">=", None, start_line, start_col))
+                elif self._peek() == ">":
+                    self._advance()
+                    tokens.append(Token(TokenType.SHR, ">>", None, start_line, start_col))
                 else:
                     tokens.append(Token(TokenType.GT, ">", None, start_line, start_col))
+            elif ch == "^":
+                tokens.append(Token(TokenType.BIT_XOR, "^", None, start_line, start_col))
+            elif ch == "~":
+                tokens.append(Token(TokenType.BIT_NOT, "~", None, start_line, start_col))
             elif ch == "+":
                 tokens.append(Token(TokenType.PLUS, "+", None, start_line, start_col))
             elif ch == "-":
@@ -407,6 +432,31 @@ class DhrivLexer:
         raise DhrivSyntaxError("Stringa non terminata.", start_line, start_col)
 
     def _read_number(self, start_line: int, start_col: int) -> Token:
+        # Supporto nativo basi binaria (0b), esadecimale (0x), ottale (0o)
+        if self._peek() == "0" and self._peek(1) in ("b", "B", "x", "X", "o", "O"):
+            prefix_zero = self._advance()
+            radix_ch = self._advance()
+            radix_map = {
+                "b": (2, "01"),
+                "o": (8, "01234567"),
+                "x": (16, "0123456789abcdefABCDEF"),
+            }
+            base, allowed = radix_map[radix_ch.lower()]
+            digits: List[str] = []
+            raw_lex = [prefix_zero, radix_ch]
+            while self.pos < self.length and (self._peek() in allowed or self._peek() == "_"):
+                c = self._advance()
+                raw_lex.append(c)
+                if c != "_":
+                    digits.append(c)
+            if not digits:
+                raise DhrivSyntaxError(
+                    f"Letterale numerico in base {base} incompleto dopo '0{radix_ch}'.",
+                    start_line,
+                    start_col,
+                )
+            return Token(TokenType.NUMBER, "".join(raw_lex), int("".join(digits), base), start_line, start_col)
+
         buf: List[str] = []
         is_float = False
         while self.pos < self.length and (self._peek().isdigit() or self._peek() == "_"):

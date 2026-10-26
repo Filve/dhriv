@@ -3,8 +3,9 @@ parser.py — Parser a Discesa Ricorsiva completo per il linguaggio Dhriv (.dhr)
 
 Converte lo stream di Token in un `ProgramNode` tipizzato, supportando:
 - Entità OOP con clausole `vertical`, `horizontal` e `diagonal` in qualunque ordine;
-- Dichiarazioni `wave` (onde di frequenza / elettromagnetiche), `let`, `fn`;
-- Espressioni algebriche, logiche e operatori Tri-Assiali (`|>`, `<->`, `</>`);
+- Dichiarazioni `wave` (onde di frequenza / elettromagnetiche), `let`, `fn` e lambda `fn(...) => ...`;
+- Espressioni algebriche, logiche, bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`) e
+  operatori Tri-Assiali (`|>`, `<->`, `</>`);
 - Blocchi `{ ... }`, cicli `while`/`for`, condizioni `if`/`else`, liste e dizionari.
 
 Copyright (c) 2026 Francesco Simeoni (@Filve). Tutti i diritti riservati.
@@ -27,6 +28,7 @@ from .ast_nodes import (
     IdentifierNode,
     IfStmtNode,
     IndexAccessNode,
+    LambdaNode,
     LetStmtNode,
     ListLiteralNode,
     LiteralNode,
@@ -100,7 +102,8 @@ class DhrivParser:
     def _parse_declaration(self) -> ASTNode:
         if self._match(TokenType.ENTITY):
             return self._parse_entity_decl()
-        if self._match(TokenType.FN):
+        if self._check(TokenType.FN) and self._peek(1).type == TokenType.IDENT:
+            self._advance()
             return self._parse_function_decl(is_method=False)
         if self._match(TokenType.LET):
             return self._parse_let_stmt(is_wave=False)
@@ -179,7 +182,11 @@ class DhrivParser:
                 if not (is_method and p == "self" and not params):
                     params.append(p)
         self._consume(TokenType.RPAREN, "Atteso ')' dopo i parametri")
-        body = self._parse_block()
+        if self._match(TokenType.FAT_ARROW):
+            expr = self._parse_expression()
+            body: List[ASTNode] = [ReturnStmtNode(value=expr, line=name_tok.line)]
+        else:
+            body = self._parse_block()
         return FunctionDeclNode(
             name=name_tok.lexeme,
             params=params,
@@ -187,6 +194,21 @@ class DhrivParser:
             is_method=is_method,
             line=name_tok.line,
         )
+
+    def _parse_lambda_expr(self, fn_line: int) -> LambdaNode:
+        self._consume(TokenType.LPAREN, "Atteso '(' per la funzione anonima")
+        params: List[str] = []
+        if not self._check(TokenType.RPAREN):
+            params.append(self._consume(TokenType.IDENT, "Atteso nome parametro").lexeme)
+            while self._match(TokenType.COMMA):
+                params.append(self._consume(TokenType.IDENT, "Atteso nome parametro dopo ','").lexeme)
+        self._consume(TokenType.RPAREN, "Atteso ')' dopo i parametri della lambda")
+        if self._match(TokenType.FAT_ARROW):
+            expr = self._parse_expression()
+            body: List[ASTNode] = [ReturnStmtNode(value=expr, line=fn_line)]
+        else:
+            body = self._parse_block()
+        return LambdaNode(params=params, body=body, line=fn_line)
 
     def _parse_let_stmt(self, is_wave: bool) -> LetStmtNode:
         name_tok = self._consume(TokenType.IDENT, "Atteso nome variabile")
@@ -288,11 +310,35 @@ class DhrivParser:
         return expr
 
     def _parse_and(self) -> ASTNode:
-        expr = self._parse_equality()
+        expr = self._parse_bit_or()
         while self._match(TokenType.AND):
             op_tok = self.tokens[self.current - 1]
-            right = self._parse_equality()
+            right = self._parse_bit_or()
             expr = BinaryOpNode(op="and", left=expr, right=right, line=op_tok.line)
+        return expr
+
+    def _parse_bit_or(self) -> ASTNode:
+        expr = self._parse_bit_xor()
+        while self._match(TokenType.BIT_OR):
+            op_tok = self.tokens[self.current - 1]
+            right = self._parse_bit_xor()
+            expr = BinaryOpNode(op="|", left=expr, right=right, line=op_tok.line)
+        return expr
+
+    def _parse_bit_xor(self) -> ASTNode:
+        expr = self._parse_bit_and()
+        while self._match(TokenType.BIT_XOR):
+            op_tok = self.tokens[self.current - 1]
+            right = self._parse_bit_and()
+            expr = BinaryOpNode(op="^", left=expr, right=right, line=op_tok.line)
+        return expr
+
+    def _parse_bit_and(self) -> ASTNode:
+        expr = self._parse_equality()
+        while self._match(TokenType.BIT_AND):
+            op_tok = self.tokens[self.current - 1]
+            right = self._parse_equality()
+            expr = BinaryOpNode(op="&", left=expr, right=right, line=op_tok.line)
         return expr
 
     def _parse_equality(self) -> ASTNode:
@@ -304,8 +350,16 @@ class DhrivParser:
         return expr
 
     def _parse_comparison(self) -> ASTNode:
-        expr = self._parse_term()
+        expr = self._parse_shift()
         while self._check(TokenType.LT, TokenType.LTE, TokenType.GT, TokenType.GTE):
+            op_tok = self._advance()
+            right = self._parse_shift()
+            expr = BinaryOpNode(op=op_tok.lexeme, left=expr, right=right, line=op_tok.line)
+        return expr
+
+    def _parse_shift(self) -> ASTNode:
+        expr = self._parse_term()
+        while self._check(TokenType.SHL, TokenType.SHR):
             op_tok = self._advance()
             right = self._parse_term()
             expr = BinaryOpNode(op=op_tok.lexeme, left=expr, right=right, line=op_tok.line)
@@ -336,9 +390,14 @@ class DhrivParser:
         return expr
 
     def _parse_unary(self) -> ASTNode:
-        if self._check(TokenType.MINUS, TokenType.NOT):
+        if self._check(TokenType.MINUS, TokenType.NOT, TokenType.BIT_NOT):
             op_tok = self._advance()
-            op_str = "not" if op_tok.type == TokenType.NOT else "-"
+            if op_tok.type == TokenType.NOT:
+                op_str = "not"
+            elif op_tok.type == TokenType.BIT_NOT:
+                op_str = "~"
+            else:
+                op_str = "-"
             return UnaryOpNode(op=op_str, operand=self._parse_unary(), line=op_tok.line)
         return self._parse_postfix()
 
@@ -378,6 +437,9 @@ class DhrivParser:
 
         if self._match(TokenType.NUMBER, TokenType.STRING, TokenType.TRUE, TokenType.FALSE, TokenType.NULL):
             return LiteralNode(value=tok.literal, line=tok.line)
+
+        if self._match(TokenType.FN):
+            return self._parse_lambda_expr(tok.line)
 
         if self._match(TokenType.NEW):
             ent_tok = self._consume(TokenType.IDENT, "Atteso nome entità dopo 'new'/'nuovo'")

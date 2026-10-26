@@ -3,8 +3,8 @@ ast_nodes.py — Albero Sintattico Astratto (AST) formale del linguaggio Dhriv.
 
 Rappresenta:
 - Entità OOP Tri-Assiali (Verticale, Orizzontale, Diagonale);
-- Funzioni, Metodi, Campi e Costruttori;
-- Operatori Tri-Assiali (`|>`, `<->`, `</>`);
+- Funzioni, Lambda, Metodi, Campi e Costruttori;
+- Operatori Tri-Assiali (`|>`, `<->`, `</>`) e Operatori Bitwise (`&`, `|`, `^`, `~`, `<<`, `>>`);
 - Dichiarazioni di Onde di Frequenza / Elettromagnetiche (`wave`);
 - Controllo di flusso, Collezioni ed Espressioni.
 
@@ -39,6 +39,13 @@ class FunctionDeclNode(ASTNode):
     params: List[str]
     body: List[ASTNode]
     is_method: bool = False
+    line: int = 1
+
+
+@dataclass
+class LambdaNode(ASTNode):
+    params: List[str]
+    body: List[ASTNode]
     line: int = 1
 
 
