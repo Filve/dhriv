@@ -29,6 +29,7 @@ from .polyglot import detect_language, render_source
 SENSITIVE_BUILTINS = {
     "legacy_run": "esegue software esterno",
     "em_transmit": "simula una trasmissione elettromagnetica",
+    "em_transmit_ai": "simula trasmissione di pesi neurali su onda elettromagnetica",
 }
 
 

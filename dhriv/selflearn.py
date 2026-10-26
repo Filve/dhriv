@@ -39,7 +39,8 @@ from .ast_nodes import (
 
 PURE_BUILTINS = {
     "len", "str", "num", "int", "float", "abs", "min", "max", "floor", "sqrt",
-    "sin", "cos", "round", "upper", "lower", "join", "split", "type_of", "range",
+    "sin", "cos", "exp", "log", "round", "upper", "lower", "join", "split", "type_of", "range",
+    "bit_gate", "bits_of", "bitstr", "from_bits", "hex_of",
 }
 
 _SCALARS = (int, float, str, bool, type(None))

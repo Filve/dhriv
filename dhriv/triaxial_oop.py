@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -70,7 +70,7 @@ class ResolutionResult:
     found: bool
     value: Any = None
     owner_class: str = ""
-    axis_used: str = "SELF"  # SELF | VERTICAL | HORIZONTAL | DIAGONAL | DYNAMIC_LINK
+    axis_used: str = "SELF"  # SELF | VERTICAL | HORIZONTAL | DIAGONAL | HORIZONTAL_LINK | DIAGONAL_LINK
     hops: int = 0
 
 
@@ -153,7 +153,7 @@ class TriAxialOOPRegistry:
             self.inline_dispatch_cache[cache_key] = res
             return res
 
-        # 1. Ricerca VERTICALE (DFS gerarchica)
+        # 1. Ricerca VERTICALE (DFS/BFS gerarchica)
         res = self._search_class_graph(cls_def.vertical_parents, member, "VERTICAL", set([class_name]))
         if res.found:
             self.inline_dispatch_cache[cache_key] = res
@@ -165,13 +165,87 @@ class TriAxialOOPRegistry:
             self.inline_dispatch_cache[cache_key] = res
             return res
 
-        # 3. Ricerca DIAGONALE (Salto trasversale incrociato: esplora sia il target diagonale sia la sua catena verticale/orizzontale!)
+        # 3. Ricerca DIAGONALE (Salto trasversale incrociato: esplora sia il target diagonale sia la sua catena V/H!)
         res = self._search_diagonal_graph(cls_def.diagonal_bridges, member, set([class_name]))
         if res.found:
             self.inline_dispatch_cache[cache_key] = res
             return res
 
         return ResolutionResult(found=False)
+
+    def resolve_specific_axis(self, instance: TriAxialObject, axis: str, member: str) -> ResolutionResult:
+        """
+        Risoluzione esplicita su un singolo asse (`VERTICAL`, `HORIZONTAL` o `DIAGONAL`),
+        saltando `SELF` (equivalente Tri-Assiale di `super` / peer-dispatch / bridge-dispatch).
+        """
+        ax = str(axis).upper()
+        cls_def = instance.dhriv_class
+        if ax in ("V", "VERTICAL", "VERTICALE"):
+            return self._search_class_graph(cls_def.vertical_parents, member, "VERTICAL", {cls_def.name})
+        if ax in ("H", "HORIZONTAL", "ORIZZONTALE"):
+            res = self._search_class_graph(cls_def.horizontal_peers, member, "HORIZONTAL", {cls_def.name})
+            if res.found:
+                return res
+            for peer in instance.horizontal_links:
+                if member in peer.fields:
+                    return ResolutionResult(True, peer.fields[member], peer.dhriv_class.name, "HORIZONTAL_LINK", 1)
+                pm = self.resolve_method(peer.dhriv_class.name, member)
+                if pm.found:
+                    return ResolutionResult(True, (peer, pm.value), peer.dhriv_class.name, "HORIZONTAL_LINK", 1)
+            return ResolutionResult(found=False)
+        if ax in ("D", "DIAGONAL", "DIAGONALE"):
+            res = self._search_diagonal_graph(cls_def.diagonal_bridges, member, {cls_def.name})
+            if res.found:
+                return res
+            for target in instance.diagonal_links:
+                if member in target.fields:
+                    return ResolutionResult(True, target.fields[member], target.dhriv_class.name, "DIAGONAL_LINK", 1)
+                dm = self.resolve_method(target.dhriv_class.name, member)
+                if dm.found:
+                    return ResolutionResult(True, (target, dm.value), target.dhriv_class.name, "DIAGONAL_LINK", 1)
+            return ResolutionResult(found=False)
+        raise ValueError(f"Asse sconosciuto '{axis}' (usa VERTICAL, HORIZONTAL o DIAGONAL).")
+
+    @staticmethod
+    def collect_swarm(instance: TriAxialObject, axis: str = "ALL") -> List[TriAxialObject]:
+        """
+        Attraversa in ampiezza (BFS) la rete viva di istanze connesse a `instance`
+        lungo `<->` (HORIZONTAL), `</>` (DIAGONAL) o entrambi (ALL), senza duplicati.
+        """
+        ax = str(axis).upper()
+        visited_ids: Set[int] = {id(instance)}
+        result: List[TriAxialObject] = []
+        queue: List[TriAxialObject] = [instance]
+
+        while queue:
+            cur = queue.pop(0)
+            neighbors: List[TriAxialObject] = []
+            if ax in ("H", "HORIZONTAL", "ORIZZONTALE", "ALL", "TUTTI"):
+                neighbors.extend(cur.horizontal_links)
+            if ax in ("D", "DIAGONAL", "DIAGONALE", "ALL", "TUTTI"):
+                neighbors.extend(cur.diagonal_links)
+            for nb in neighbors:
+                if id(nb) not in visited_ids:
+                    visited_ids.add(id(nb))
+                    result.append(nb)
+                    queue.append(nb)
+        return result
+
+    @staticmethod
+    def inspect_coordinates(instance: TriAxialObject) -> Dict[str, Any]:
+        c = instance.dhriv_class
+        return {
+            "entity": c.name,
+            "h": c.h_coord,
+            "v": c.v_depth,
+            "d_h": c.d_vector[0],
+            "d_v": c.d_vector[1],
+            "vertical_parents": list(c.vertical_parents),
+            "horizontal_peers": list(c.horizontal_peers),
+            "diagonal_bridges": list(c.diagonal_bridges),
+            "h_links": len(instance.horizontal_links),
+            "d_links": len(instance.diagonal_links),
+        }
 
     def _search_class_graph(
         self,
@@ -339,7 +413,7 @@ class TriAxialLargeScaleSearch:
         if filtered:
             return filtered
 
-        # Fallback a onda diagonale espansiva (Chebyshev distance `max(|Δh|, |Δv|)`)
+        # Fallback a onda diagonale espansiva
         all_matches = self._filter_and_rank(list(self.nodes.values()), capability, axis="DIAGONAL_WAVE", origin=(origin_h, origin_v))
         return all_matches
 

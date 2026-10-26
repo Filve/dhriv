@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import List, Optional
 
 from . import __version__
-from .compiler import AutoCompiler, DhrivBinaryError, binary_to_program, compile_source
+from .binary_core import BinaryALU
+from .bytecode_vm import BytecodeCompiler, DhrivVM
+from .compiler import (
+    AutoCompiler,
+    DhrivBinaryError,
+    binary_to_bytecode,
+    binary_to_program,
+    compile_source,
+    disassemble_binary,
+    disassemble_source,
+)
 from .guardians import WatchDog, WatchGuardian
 from .interpreter import DhrivInterpreter, DhrivRuntimeError, format_value
 from .lexer import DhrivSyntaxError
@@ -58,6 +68,25 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(result.error, file=sys.stderr)
             return 1
         return 0
+
+    if args.engine == "vm":
+        vm = DhrivVM(echo=True, allow_legacy=args.allow_legacy, learner=learner)
+        try:
+            if path.suffix == ".dhrb" and learner is None:
+                bc_mod, _ = binary_to_bytecode(path.read_bytes())
+            else:
+                bc_mod = BytecodeCompiler.compile_program(program, optimize=True)
+            vm.run_module(bc_mod)
+        except DhrivRuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        finally:
+            if learner:
+                learner.finish_run()
+        if args.report and learner:
+            print(json.dumps(learner.report(), indent=2, ensure_ascii=False), file=sys.stderr)
+        return 0
+
     interp = DhrivInterpreter(echo=True, allow_legacy=args.allow_legacy, learner=learner)
     try:
         interp.run_program(program)
@@ -69,6 +98,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             learner.finish_run()
     if args.report and learner:
         print(json.dumps(learner.report(), indent=2, ensure_ascii=False), file=sys.stderr)
+    return 0
+
+
+def cmd_disasm(args: argparse.Namespace) -> int:
+    path = Path(args.file)
+    if path.suffix == ".dhrb":
+        print(disassemble_binary(path.read_bytes(), show_bits=args.bits))
+    else:
+        print(disassemble_source(path.read_text(encoding="utf-8"), show_bits=args.bits))
+    return 0
+
+
+def cmd_alu(args: argparse.Namespace) -> int:
+    res = BinaryALU(width=args.bits).execute(args.op, int(args.a, 0), int(args.b, 0))
+    print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -169,12 +213,13 @@ def cmd_repl(_: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="dhriv", description="Linguaggio Dhriv — OOP Tri-Assiale (V/H/D)")
+    p = argparse.ArgumentParser(prog="dhriv", description="Linguaggio Dhriv — OOP Tri-Assiale (V/H/D), Binario & AI")
     p.add_argument("--version", action="version", version=f"dhriv {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
     s = sub.add_parser("run", help="esegue un file .dhr o .dhrb")
     s.add_argument("file")
+    s.add_argument("--engine", choices=["vm", "ast"], default="vm", help="motore di esecuzione (default: vm a 64 bit)")
     s.add_argument("--watchdog", action="store_true", help="esegue sotto supervisione WatchDog")
     s.add_argument("--timeout", type=float, default=30.0)
     s.add_argument("--allow-legacy", action="store_true", help="abilita legacy_run (software esterno)")
@@ -182,7 +227,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--report", action="store_true", help="stampa il report di apprendimento")
     s.set_defaults(func=cmd_run)
 
-    s = sub.add_parser("compile", help="compila .dhr in .dhrb")
+    s = sub.add_parser("disasm", help="disassembla un file .dhr o .dhrb in istruzioni ISA a 64 bit")
+    s.add_argument("file")
+    s.add_argument("--bits", action="store_true", help="mostra anche la scomposizione binaria completa a 64 bit")
+    s.set_defaults(func=cmd_disasm)
+
+    s = sub.add_parser("alu", help="esegue un'operazione sull'ALU binaria hardware a porte logiche")
+    s.add_argument("op", help="ADD, SUB, MUL, AND, OR, XOR, NAND, NOR, NOT, SHL, SHR, ROL, ROR")
+    s.add_argument("a", help="primo operando (es. 42, 0b101010, 0x2A)")
+    s.add_argument("b", nargs="?", default="0", help="secondo operando")
+    s.add_argument("--bits", type=int, default=8, help="ampiezza registro in bit (default: 8)")
+    s.set_defaults(func=cmd_alu)
+
+    s = sub.add_parser("compile", help="compila .dhr in .dhrb (v2 con bytecode + AST firmato)")
     s.add_argument("file")
     s.add_argument("-o", "--output")
     s.set_defaults(func=cmd_compile)
