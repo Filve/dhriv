@@ -1,0 +1,61 @@
+// ============================================================================
+// Dhriv Poliglotta (Italiano) — Mente Cognitiva OOP Tri-Assiale + Attention
+// Autore e direzione creativa: Francesco Simeoni (@Filve)
+// ============================================================================
+
+entita NucleoBinario {
+    sia id_nodo = "nodo-0"
+    funzione codifica_bit(valore) => bitstr(valore, 8, 4)
+}
+
+entita StratoAttentivo {
+    funzione attendi(sequenza) {
+        sia attn = nn_attention(4, 21)
+        ritorna sequenza |> attn
+    }
+}
+
+entita PonteMemoria {
+    funzione crea_archivio() {
+        sia mem = ai_memory()
+        mem_store(mem, "visione", [1.0, 0.0, 0.2, 0.0], "Corteccia Visiva", 1, 2)
+        mem_store(mem, "linguaggio", [0.1, 0.95, 0.1, 0.0], "Area Poliglotta Dhriv", 2, 2)
+        mem_store(mem, "onde_em", [0.0, 0.1, 0.0, 0.99], "Modem Spettro Radio", 3, 0)
+        ritorna mem
+    }
+}
+
+// Entità che unisce Verticale + Orizzontale + Diagonale ed è invocabile con |>
+entita AgenteSinaptico verticale NucleoBinario orizzontale StratoAttentivo diagonale PonteMemoria {
+    sia peso = 1
+    funzione init(nome, peso) {
+        questo.id_nodo = nome
+        questo.peso = peso
+    }
+    funzione forward(impulso) {
+        ritorna impulso * questo.peso
+    }
+    funzione stato(impulso) {
+        ritorna questo.id_nodo + ":" + str(impulso * questo.peso)
+    }
+}
+
+sia alfa = nuovo AgenteSinaptico("alfa", 2)
+sia beta = nuovo AgenteSinaptico("beta", 3)
+sia gamma = nuovo AgenteSinaptico("gamma", 5)
+
+// Costellazione viva: risonanza orizzontale <-> e ponte diagonale </>
+alfa <-> beta
+alfa </> gamma
+
+stampa("Bit registro:", alfa.codifica_bit(0b1101_0110))
+stampa("Pipe verticale su entità:", 21 |> alfa)
+stampa("Sciame Tri-Assiale:", axis_broadcast(alfa, "ALL", "stato", [10]))
+
+sia seq = tensore([[1.0, 0.2, 0.0, 0.5], [0.0, 0.9, 0.3, 0.1]])
+sia contesto = alfa.attendi(seq)
+stampa("Self-Attention shape:", contesto.shape)
+
+sia archivio = alfa.crea_archivio()
+sia ricordo = mem_recall(archivio, [0.05, 0.98, 0.1, 0.0], 1)[0]
+stampa("Memoria richiamata:", ricordo.key, "->", ricordo.payload)

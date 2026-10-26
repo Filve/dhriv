@@ -1,0 +1,40 @@
+// ============================================================================
+// Dhriv 0.2.0-synapse — Dal Singolo Bit (0/1) all'Intelligenza Artificiale
+// Autore e direzione creativa: Francesco Simeoni (@Filve)
+// ============================================================================
+
+print("=== 1. LIVELLO BINARIO PURO & ALU A PORTE LOGICHE ===")
+let reg_a = 0b0010_1010   // 42 in binario
+let reg_b = 0b0001_0000   // 16 in binario
+let masked = (reg_a | reg_b) ^ 0x02
+
+let hw = alu("ADD", reg_a, reg_b, 8)
+print("ALU 8-bit ADD:", reg_a, "+", reg_b, "=>", hw.value, "bits:", hw.bitstring, "flags:", hw.flags)
+print("Bitwise & Hex:", hex_of(masked), "XOR(1,1):", bit_gate("XOR", 1, 1), "XOR(1,0):", bit_gate("XOR", 1, 0))
+
+print("=== 2. RETE NEURALE TRI-ASSIALE (V/H/D) CHE IMPARA LA PORTA XOR ===")
+let X = tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+let Y = tensor([[0], [1], [1], [0]])
+
+let brain = nn_triaxial(2, 8, 1, 2, "sigmoid", 7)
+let opt = nn_adam(brain, 0.05)
+
+for epoch in range(0, 220) {
+    opt_zero_grad(opt)
+    let pred = X |> brain
+    let loss = bce_loss(pred, Y)
+    backward(loss)
+    opt_step(opt)
+}
+
+let final_pred = X |> brain
+let final_loss = item(bce_loss(final_pred, Y))
+let p00 = round(final_pred[0][0])
+let p01 = round(final_pred[1][0])
+let p10 = round(final_pred[2][0])
+let p11 = round(final_pred[3][0])
+print("Predizioni XOR apprese:", [p00, p01, p10, p11], "loss:", round(final_loss, 5))
+
+print("=== 3. TRASMISSIONE ONDA EM DEI PESI NEURALI IEEE-754 ===")
+let radio = em_transmit_ai(brain, 16, "BFSK")
+print("Cervello AI trasmesso via onda EM -> ok:", radio.ok, "byte:", radio.bytes, "tensori:", len(radio.tensors))
