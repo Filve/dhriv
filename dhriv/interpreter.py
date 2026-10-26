@@ -1,11 +1,14 @@
 """
-interpreter.py — Runtime ad albero (tree-walking) del linguaggio Dhriv.
+interpreter.py — Runtime di esecuzione del linguaggio Dhriv.
 
-Esegue l'AST prodotto da `DhrivParser` collegandolo a:
-- il registro OOP Tri-Assiale (`TriAxialOOPRegistry`): risoluzione Self -> Verticale -> Orizzontale -> Diagonale;
-- il motore di ricerca su larga scala (`TriAxialLargeScaleSearch`);
-- il motore di onde / elettromagnetismo (`wave_electromagnetic`);
-- il motore di auto-apprendimento opzionale (memoizzazione appresa di funzioni pure).
+Collega il linguaggio a:
+- Fondamenta Binarie, Porte Logiche e ALU a N bit (`binary_core`);
+- Registro OOP Tri-Assiale (`TriAxialOOPRegistry`): risoluzione Self -> Verticale -> Orizzontale -> Diagonale,
+  dispatch assiale esplicito e broadcast a sciame (`axis_call`, `axis_broadcast`);
+- Motore di ricerca su larga scala (`TriAxialLargeScaleSearch`);
+- Motore di onde / elettromagnetismo (`wave_electromagnetic`);
+- Motore nativo di Intelligenza Artificiale, Tensori, Autograd, Self-Attention e Reti Tri-Assiali (`ai_engine`);
+- Motore di auto-apprendimento opzionale (`selflearn`).
 
 Copyright (c) 2026 Francesco Simeoni (@Filve). Tutti i diritti riservati.
 """
@@ -14,14 +17,28 @@ from __future__ import annotations
 
 import copy
 import math
-import shlex
-import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from .ai_engine import (
+    AdamOptimizer,
+    LinearLayer,
+    MindMemory,
+    NeuralModule,
+    SGDOptimizer,
+    SelfAttentionLayer,
+    Tensor,
+    TriAxialNetwork,
+    bce_loss,
+    cosine_similarity,
+    cross_entropy_loss,
+    mse_loss,
+    pack_weights_binary,
+    unpack_weights_binary,
+)
 from .ast_nodes import (
     ASTNode,
     AssignStmtNode,
@@ -34,6 +51,7 @@ from .ast_nodes import (
     IdentifierNode,
     IfStmtNode,
     IndexAccessNode,
+    LambdaNode,
     LetStmtNode,
     ListLiteralNode,
     LiteralNode,
@@ -45,6 +63,15 @@ from .ast_nodes import (
     TriAxialOpNode,
     UnaryOpNode,
     WhileStmtNode,
+)
+from .binary_core import (
+    BinaryALU,
+    bits_to_bitstring,
+    bits_to_int,
+    eval_gate,
+    full_adder,
+    half_adder,
+    int_to_bits,
 )
 from .parser import DhrivParser
 from .triaxial_oop import (
@@ -159,7 +186,7 @@ def format_value(value: Any) -> str:
     if isinstance(value, TriAxialObject):
         inner = ", ".join(f"{k}={_format_inner(v)}" for k, v in value.fields.items())
         return f"<{value.dhriv_class.name} {inner}>".replace(" >", ">")
-    if isinstance(value, WaveSignal):
+    if isinstance(value, (WaveSignal, Tensor, NeuralModule, MindMemory)):
         return repr(value)
     if isinstance(value, (DhrivFunction, BoundMethod)):
         return f"<fn {value.node.name}>"
@@ -195,6 +222,7 @@ class DhrivInterpreter:
         self.heartbeat = time.monotonic()
         self._depth = 0
         self._closures: Dict[int, Environment] = {}
+        self._vm: Any = None
         self.globals = Environment()
         sys.setrecursionlimit(max(sys.getrecursionlimit(), 12_000))
         self._install_builtins()
@@ -343,6 +371,9 @@ class DhrivInterpreter:
             return node.value
         if t is IdentifierNode:
             return env.lookup(node.name, node.line)
+        if t is LambdaNode:
+            fnode = FunctionDeclNode("<lambda>", list(node.params), list(node.body), is_method=False, line=node.line)
+            return DhrivFunction(fnode, env)
         if t is BinaryOpNode:
             return self._eval_binary(node, env)
         if t is CallNode:
@@ -350,14 +381,11 @@ class DhrivInterpreter:
             args = [self._eval(a, env) for a in node.args]
             return self._invoke(callee, args, node.line)
         if t is MemberAccessNode:
-            return self._eval_member(node, env)
+            obj = self._eval(node.obj, env)
+            return self.resolve_member_value(obj, node.member, node.line)
         if t is UnaryOpNode:
             v = self._eval(node.operand, env)
-            if node.op == "not":
-                return not v
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                return -v
-            raise DhrivRuntimeError("Operatore '-' valido solo su numeri.", node.line)
+            return self.eval_unary_value(node.op, v, node.line)
         if t is ListLiteralNode:
             return [self._eval(e, env) for e in node.elements]
         if t is MapLiteralNode:
@@ -365,28 +393,42 @@ class DhrivInterpreter:
         if t is IndexAccessNode:
             obj = self._eval(node.obj, env)
             idx = self._eval(node.index, env)
-            try:
-                return obj[idx]
-            except (IndexError, KeyError, TypeError) as exc:
-                raise DhrivRuntimeError(f"Accesso per indice non valido: {exc}", node.line)
+            return self.eval_index_value(obj, idx, node.line)
         if t is NewInstanceNode:
-            return self._eval_new(node, env)
+            args = [self._eval(a, env) for a in node.args]
+            return self.instantiate_entity(node.entity_name, args, node.line)
         if t is TriAxialOpNode:
             return self._eval_triaxial(node, env)
         raise DhrivRuntimeError(f"Espressione non supportata: {t.__name__}", getattr(node, "line", None))
 
-    def _eval_binary(self, node: BinaryOpNode, env: Environment) -> Any:
-        op = node.op
-        if op == "and":
-            left = self._eval(node.left, env)
-            return self._eval(node.right, env) if left else left
-        if op == "or":
-            left = self._eval(node.left, env)
-            return left if left else self._eval(node.right, env)
+    def eval_unary_value(self, op: str, v: Any, line: Optional[int] = None) -> Any:
+        if op == "not":
+            return not v
+        if op == "~":
+            if isinstance(v, int) and not isinstance(v, bool):
+                return ~v
+            raise DhrivRuntimeError("Operatore bitwise '~' valido solo su interi.", line)
+        if op == "-":
+            if isinstance(v, Tensor):
+                return v.neg()
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return -v
+            raise DhrivRuntimeError("Operatore '-' valido solo su numeri o Tensor.", line)
+        raise DhrivRuntimeError(f"Operatore unario sconosciuto '{op}'", line)
 
-        l = self._eval(node.left, env)
-        r = self._eval(node.right, env)
+    def eval_binary_values(self, op: str, l: Any, r: Any, line: Optional[int] = None) -> Any:
         try:
+            # Supporto algebrico differenziabile per Tensor
+            if isinstance(l, Tensor) or isinstance(r, Tensor):
+                if op == "+" and not (isinstance(l, str) or isinstance(r, str)):
+                    return (l if isinstance(l, Tensor) else Tensor(l)).add(r)
+                if op == "-":
+                    return (l if isinstance(l, Tensor) else Tensor(l)).sub(r)
+                if op == "*":
+                    return (l if isinstance(l, Tensor) else Tensor(l)).mul(r)
+                if op == "/":
+                    return (l if isinstance(l, Tensor) else Tensor(l)).div(r)
+
             if op == "+":
                 if isinstance(l, str) or isinstance(r, str):
                     return format_value(l) + format_value(r)
@@ -397,18 +439,30 @@ class DhrivInterpreter:
                 return l * r
             if op == "/":
                 if r == 0:
-                    raise DhrivRuntimeError("Divisione per zero.", node.line)
+                    raise DhrivRuntimeError("Divisione per zero.", line)
                 if isinstance(l, int) and isinstance(r, int) and l % r == 0:
                     return l // r
                 return l / r
             if op == "%":
                 if r == 0:
-                    raise DhrivRuntimeError("Modulo per zero.", node.line)
+                    raise DhrivRuntimeError("Modulo per zero.", line)
                 return l % r
             if op == "**":
                 if isinstance(r, (int, float)) and abs(r) > 10_000:
-                    raise DhrivRuntimeError("Esponente troppo grande.", node.line)
+                    raise DhrivRuntimeError("Esponente troppo grande.", line)
                 return l ** r
+            if op in ("&", "|", "^", "<<", ">>"):
+                if not (isinstance(l, int) and isinstance(r, int) and not isinstance(l, bool) and not isinstance(r, bool)):
+                    raise DhrivRuntimeError(f"Operatore bitwise '{op}' richiede due interi.", line)
+                if op == "&":
+                    return l & r
+                if op == "|":
+                    return l | r
+                if op == "^":
+                    return l ^ r
+                if r < 0 or r > 4096:
+                    raise DhrivRuntimeError("Conteggio shift fuori intervallo.", line)
+                return (l << r) if op == "<<" else (l >> r)
             if op == "==":
                 return l == r
             if op == "!=":
@@ -423,19 +477,43 @@ class DhrivInterpreter:
                 return l >= r
         except DhrivRuntimeError:
             raise
+        except ZeroDivisionError:
+            raise DhrivRuntimeError("Divisione per zero.", line)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise DhrivRuntimeError(f"Operazione '{op}' non valida per questi operandi: {exc}", node.line)
-        raise DhrivRuntimeError(f"Operatore sconosciuto '{op}'", node.line)
+            raise DhrivRuntimeError(f"Operazione '{op}' non valida per questi operandi: {exc}", line)
+        raise DhrivRuntimeError(f"Operatore sconosciuto '{op}'", line)
 
-    def _eval_member(self, node: MemberAccessNode, env: Environment) -> Any:
-        obj = self._eval(node.obj, env)
-        member = node.member
+    def _eval_binary(self, node: BinaryOpNode, env: Environment) -> Any:
+        op = node.op
+        if op == "and":
+            left = self._eval(node.left, env)
+            return self._eval(node.right, env) if left else left
+        if op == "or":
+            left = self._eval(node.left, env)
+            return left if left else self._eval(node.right, env)
+        l = self._eval(node.left, env)
+        r = self._eval(node.right, env)
+        return self.eval_binary_values(op, l, r, node.line)
+
+    def eval_index_value(self, obj: Any, idx: Any, line: Optional[int] = None) -> Any:
+        if isinstance(obj, Tensor):
+            try:
+                row = obj.data[int(idx)]
+                return list(row)
+            except (IndexError, ValueError, TypeError) as exc:
+                raise DhrivRuntimeError(f"Indice Tensor non valido: {exc}", line)
+        try:
+            return obj[idx]
+        except (IndexError, KeyError, TypeError) as exc:
+            raise DhrivRuntimeError(f"Accesso per indice non valido: {exc}", line)
+
+    def resolve_member_value(self, obj: Any, member: str, line: Optional[int] = None) -> Any:
         if isinstance(obj, TriAxialObject):
             res = self.registry.resolve_instance_member(obj, member)
             if not res.found:
                 raise DhrivRuntimeError(
                     f"L'entità '{obj.dhriv_class.name}' non ha il membro '{member}' su nessun asse (V/H/D).",
-                    node.line,
+                    line,
                 )
             value = res.value
             if isinstance(value, FunctionDeclNode):
@@ -452,28 +530,73 @@ class DhrivInterpreter:
         if isinstance(obj, WaveSignal):
             if member in WAVE_PUBLIC_ATTRS:
                 return getattr(obj, member)
-            raise DhrivRuntimeError(f"Le onde non hanno l'attributo '{member}'.", node.line)
+            raise DhrivRuntimeError(f"Le onde non hanno l'attributo '{member}'.", line)
+        if isinstance(obj, Tensor):
+            if member == "shape":
+                return obj.shape
+            if member == "rows":
+                return obj.rows
+            if member == "cols":
+                return obj.cols
+            if member == "values":
+                return obj.values
+            if member == "grad":
+                return obj.grad_values
+            if member == "T":
+                return obj.T
+            if member == "requires_grad":
+                return obj.requires_grad
+            raise DhrivRuntimeError(f"Tensor non ha l'attributo '{member}'.", line)
+        if isinstance(obj, NeuralModule):
+            if member == "parameters":
+                return obj.parameters()
+            if hasattr(obj, member) and isinstance(getattr(obj, member), (Tensor, int, float, str)):
+                return getattr(obj, member)
+            raise DhrivRuntimeError(f"Il modulo neurale non espone l'attributo '{member}'.", line)
         if isinstance(obj, dict):
             if member in obj:
                 return obj[member]
-            raise DhrivRuntimeError(f"Chiave '{member}' assente nella mappa.", node.line)
-        raise DhrivRuntimeError(f"Accesso al membro '{member}' non supportato su questo valore.", node.line)
+            raise DhrivRuntimeError(f"Chiave '{member}' assente nella mappa.", line)
+        raise DhrivRuntimeError(f"Accesso al membro '{member}' non supportato su questo valore.", line)
 
-    def _eval_new(self, node: NewInstanceNode, env: Environment) -> TriAxialObject:
-        if node.entity_name not in self.registry.classes:
-            raise DhrivRuntimeError(f"Entità '{node.entity_name}' non dichiarata.", node.line)
-        args = [self._eval(a, env) for a in node.args]
-        instance = self.registry.instantiate(node.entity_name)
+    def instantiate_entity(self, entity_name: str, args: List[Any], line: Optional[int] = None) -> TriAxialObject:
+        if entity_name not in self.registry.classes:
+            raise DhrivRuntimeError(f"Entità '{entity_name}' non dichiarata.", line)
+        instance = self.registry.instantiate(entity_name)
         instance.fields = copy.deepcopy(instance.fields)
-        ctor = self.registry.resolve_method(node.entity_name, "init")
+        ctor = self.registry.resolve_method(entity_name, "init")
         if ctor.found and isinstance(ctor.value, FunctionDeclNode):
             closure = self._closures.get(id(ctor.value), self.globals)
-            self._call_user(ctor.value, args, closure, instance, node.line)
+            self._call_user(ctor.value, args, closure, instance, line)
         elif args:
             raise DhrivRuntimeError(
-                f"L'entità '{node.entity_name}' non ha un metodo 'init' ma riceve {len(args)} argomenti.", node.line
+                f"L'entità '{entity_name}' non ha un metodo 'init' ma riceve {len(args)} argomenti.", line
             )
         return instance
+
+    def apply_triaxial_values(self, axis: str, l: Any, r: Any, line: Optional[int] = None) -> Any:
+        if axis == "HORIZONTAL":
+            if isinstance(l, TriAxialObject) and isinstance(r, TriAxialObject):
+                return l.link_horizontal(r)
+            if isinstance(l, WaveSignal) and isinstance(r, WaveSignal):
+                return superpose_waves(l, r)
+            if isinstance(l, Tensor) and isinstance(r, Tensor):
+                return l.add(r).mul(0.5)
+            raise DhrivRuntimeError(
+                "'<->' collega due entità, sovrappone due onde o fonde due Tensor.", line
+            )
+        if axis == "DIAGONAL":
+            if isinstance(l, TriAxialObject) and isinstance(r, TriAxialObject):
+                return l.link_diagonal(r)
+            if isinstance(l, Tensor) and isinstance(r, Tensor):
+                try:
+                    return l.matmul(r)
+                except ValueError as exc:
+                    raise DhrivRuntimeError(str(exc), line)
+            raise DhrivRuntimeError(
+                "'</>' crea un ponte diagonale tra due entità o proietta due Tensor (matmul).", line
+            )
+        raise DhrivRuntimeError(f"Asse sconosciuto '{axis}'", line)
 
     def _eval_triaxial(self, node: TriAxialOpNode, env: Environment) -> Any:
         if node.axis == "VERTICAL":
@@ -488,25 +611,36 @@ class DhrivInterpreter:
 
         l = self._eval(node.left, env)
         r = self._eval(node.right, env)
-        if node.axis == "HORIZONTAL":
-            if isinstance(l, TriAxialObject) and isinstance(r, TriAxialObject):
-                return l.link_horizontal(r)
-            if isinstance(l, WaveSignal) and isinstance(r, WaveSignal):
-                return superpose_waves(l, r)
-            raise DhrivRuntimeError("'<->' collega due entità oppure sovrappone due onde.", node.line)
-        if node.axis == "DIAGONAL":
-            if isinstance(l, TriAxialObject) and isinstance(r, TriAxialObject):
-                return l.link_diagonal(r)
-            raise DhrivRuntimeError("'</>' collega due entità con un ponte diagonale.", node.line)
-        raise DhrivRuntimeError(f"Asse sconosciuto '{node.axis}'", node.line)
+        return self.apply_triaxial_values(node.axis, l, r, node.line)
 
     # -------------------------------------------------------------- chiamate
+
+    def _call_method_value(
+        self, owner: TriAxialObject, val: Any, args: List[Any], line: Optional[int] = None
+    ) -> Any:
+        if isinstance(val, FunctionDeclNode):
+            return self._call_user(val, args, self._closures.get(id(val), self.globals), owner, line)
+        if self._vm is not None and hasattr(val, "instructions"):
+            return self._vm.call_chunk(val, args, self._closures.get(id(val), self.globals), owner, line)
+        if isinstance(val, tuple) and len(val) == 2 and isinstance(val[0], TriAxialObject):
+            peer, mval = val
+            return self._call_method_value(peer, mval, args, line)
+        return val
 
     def _invoke(self, callee: Any, args: List[Any], line: Optional[int]) -> Any:
         if isinstance(callee, BoundMethod):
             return self._call_user(callee.node, args, callee.closure, callee.instance, line)
         if isinstance(callee, DhrivFunction):
             return self._call_user(callee.node, args, callee.closure, None, line)
+        if isinstance(callee, TriAxialObject):
+            # Entità OOP invocabili nelle pipeline verticali `|>` tramite `forward` / `call` / `esegui`
+            for hook in ("forward", "call", "esegui"):
+                res = self.registry.resolve_instance_member(callee, hook)
+                if res.found:
+                    return self._call_method_value(callee, res.value, args, line)
+            raise DhrivRuntimeError(
+                f"L'entità '{callee.dhriv_class.name}' non definisce 'forward', 'call' o 'esegui'.", line
+            )
         if callable(callee):
             try:
                 return callee(*args)
@@ -532,7 +666,7 @@ class DhrivInterpreter:
         try:
             if self._depth > self.MAX_CALL_DEPTH:
                 raise DhrivRuntimeError("Profondità massima di chiamata superata.", line)
-            use_learner = self.learner is not None and self_obj is None
+            use_learner = self.learner is not None and self_obj is None and node.name != "<lambda>"
             if use_learner:
                 hit, cached = self.learner.lookup(node, args)
                 if hit:
@@ -634,6 +768,138 @@ class DhrivInterpreter:
 
             return LegacyBridge().run(command, timeout=float(timeout))
 
+        # --- Primitive Binarie & ALU ---
+        def _bit_gate(gate: str, a: int, b: int = 0) -> int:
+            return eval_gate(gate, int(a), int(b))
+
+        def _half_adder(a: int, b: int) -> Dict[str, int]:
+            s, c = half_adder(int(a), int(b))
+            return {"sum": s, "carry": c}
+
+        def _full_adder(a: int, b: int, cin: int = 0) -> Dict[str, int]:
+            s, c = full_adder(int(a), int(b), int(cin))
+            return {"sum": s, "carry": c}
+
+        def _alu(op: str, a: int, b: int = 0, width: int = 8) -> Dict[str, Any]:
+            return BinaryALU(int(width)).execute(op, int(a), int(b))
+
+        def _bits_of(n: int, width: int = 8) -> List[int]:
+            return int_to_bits(int(n), int(width))
+
+        def _bitstr(n: int, width: int = 8, group: int = 0) -> str:
+            return bits_to_bitstring(int_to_bits(int(n), int(width)), group=int(group))
+
+        def _from_bits(bits_or_str: Any, signed: bool = False) -> int:
+            if isinstance(bits_or_str, str):
+                clean = [1 if c == "1" else 0 for c in bits_or_str if c in ("0", "1")]
+                return bits_to_int(clean, signed=bool(signed))
+            return bits_to_int([int(x) for x in bits_or_str], signed=bool(signed))
+
+        # --- OOP Tri-Assiale Avanzato ---
+        def _coords_of(obj: Any) -> Dict[str, Any]:
+            if not isinstance(obj, TriAxialObject):
+                raise DhrivRuntimeError("coords_of() richiede un'entità OOP Dhriv.")
+            return interp.registry.inspect_coordinates(obj)
+
+        def _axis_call(obj: Any, axis: str, method_name: str, call_args: Optional[List[Any]] = None) -> Any:
+            if not isinstance(obj, TriAxialObject):
+                raise DhrivRuntimeError("axis_call() richiede un'entità OOP Dhriv.")
+            res = interp.registry.resolve_specific_axis(obj, axis, str(method_name))
+            if not res.found:
+                raise DhrivRuntimeError(
+                    f"Nessun membro '{method_name}' trovato sull'asse {axis} per '{obj.dhriv_class.name}'."
+                )
+            return interp._call_method_value(obj, res.value, list(call_args or []), None)
+
+        def _axis_broadcast(obj: Any, axis: str, method_name: str, call_args: Optional[List[Any]] = None) -> List[Any]:
+            if not isinstance(obj, TriAxialObject):
+                raise DhrivRuntimeError("axis_broadcast() richiede un'entità OOP Dhriv.")
+            swarm = interp.registry.collect_swarm(obj, axis)
+            arglist = list(call_args or [])
+            results: List[Any] = []
+            for target in swarm:
+                res = interp.registry.resolve_instance_member(target, str(method_name))
+                if not res.found:
+                    continue
+                results.append(interp._call_method_value(target, res.value, arglist, None))
+            return results
+
+        # --- Helper Funzionali ---
+        def _map_list(lst: List[Any], fn_val: Any) -> List[Any]:
+            return [interp._invoke(fn_val, [item], None) for item in lst]
+
+        def _filter_list(lst: List[Any], fn_val: Any) -> List[Any]:
+            return [item for item in lst if interp._invoke(fn_val, [item], None)]
+
+        def _reduce_list(lst: List[Any], fn_val: Any, init: Any) -> Any:
+            acc = init
+            for item in lst:
+                acc = interp._invoke(fn_val, [acc, item], None)
+            return acc
+
+        # --- Primitive AI, Tensori, Autograd & Memoria Neuro-Simbolica ---
+        def _tensor(data: Any, requires_grad: bool = False) -> Tensor:
+            return Tensor(data, requires_grad=bool(requires_grad))
+
+        def _zero_grad(target: Any) -> None:
+            if isinstance(target, Tensor):
+                target.zero_grad()
+            elif isinstance(target, (SGDOptimizer, AdamOptimizer)):
+                target.zero_grad()
+            elif isinstance(target, NeuralModule):
+                for p in target.parameters():
+                    p.zero_grad()
+            elif isinstance(target, list):
+                for p in target:
+                    if isinstance(p, Tensor):
+                        p.zero_grad()
+            else:
+                raise DhrivRuntimeError("zero_grad() accetta Tensor, lista di Tensor, modulo neurale o ottimizzatore.")
+
+        def _opt_step(opt: Any) -> None:
+            if not isinstance(opt, (SGDOptimizer, AdamOptimizer)):
+                raise DhrivRuntimeError("opt_step() richiede un ottimizzatore (nn_sgd o nn_adam).")
+            opt.step()
+
+        def _params_of(mod_or_list: Any) -> List[Tensor]:
+            if isinstance(mod_or_list, NeuralModule):
+                return mod_or_list.parameters()
+            if isinstance(mod_or_list, list):
+                out: List[Tensor] = []
+                for x in mod_or_list:
+                    if isinstance(x, NeuralModule):
+                        out.extend(x.parameters())
+                    elif isinstance(x, Tensor):
+                        out.append(x)
+                return out
+            raise DhrivRuntimeError("Atteso modulo neurale o lista di parametri Tensor.")
+
+        def _ai_pack_hex(mod_or_params: Any) -> str:
+            return pack_weights_binary(_params_of(mod_or_params)).hex()
+
+        def _ai_unpack_hex(hex_str: str, target: Any = None) -> List[Tensor]:
+            blob = bytes.fromhex(str(hex_str))
+            t_params = _params_of(target) if target is not None else None
+            return unpack_weights_binary(blob, t_params)
+
+        def _em_transmit_ai(mod_or_params: Any, snr_db: float = 16.0, scheme: str = "BFSK") -> Dict[str, Any]:
+            """Serializza i pesi di un modello neurale in binario IEEE-754 e li trasmette via onda EM con FEC."""
+            modem = ElectromagneticBinaryModem()
+            raw_weights = pack_weights_binary(_params_of(mod_or_params))
+            sig = modem.modulate_binary(raw_weights, scheme=str(scheme))
+            noisy = modem.inject_channel_noise(sig, snr_db=float(snr_db))
+            try:
+                rx_bytes, info = modem.demodulate_binary(noisy, scheme=str(scheme))
+                tensors = unpack_weights_binary(rx_bytes)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc), "tensors": []}
+            return {
+                "ok": True,
+                "bytes": len(rx_bytes),
+                "corrected_bits": info["fec_corrected_bit_errors"],
+                "tensors": tensors,
+            }
+
         def _type_of(x: Any) -> str:
             if x is None:
                 return "null"
@@ -651,6 +917,14 @@ class DhrivInterpreter:
                 return x.dhriv_class.name
             if isinstance(x, WaveSignal):
                 return "wave"
+            if isinstance(x, Tensor):
+                return "tensor"
+            if isinstance(x, NeuralModule):
+                return "neural_module"
+            if isinstance(x, MindMemory):
+                return "mind_memory"
+            if isinstance(x, (SGDOptimizer, AdamOptimizer)):
+                return "optimizer"
             return "function"
 
         builtins: Dict[str, Callable[..., Any]] = {
@@ -672,6 +946,8 @@ class DhrivInterpreter:
             "sqrt": math.sqrt,
             "sin": math.sin,
             "cos": math.cos,
+            "exp": math.exp,
+            "log": math.log,
             "round": lambda x, n=0: round(x, int(n)),
             "upper": lambda s: str(s).upper(),
             "lower": lambda s: str(s).lower(),
@@ -679,6 +955,7 @@ class DhrivInterpreter:
             "split": lambda s, sep=" ": str(s).split(str(sep)),
             "type_of": _type_of,
             "clock": time.perf_counter,
+            # Onde & Elettromagnetismo
             "wave_new": _wave_new,
             "spectrum": analyze_spectrum,
             "wavelength": _wavelength,
@@ -686,11 +963,64 @@ class DhrivInterpreter:
             "photon_ev": _photon_ev,
             "fspl": free_space_path_loss_db,
             "em_transmit": _em_transmit,
+            # Ricerca Tri-Assiale Larga Scala
             "scale_register": _scale_register,
             "search_h": _search_h,
             "search_v": _search_v,
             "search_d": _search_d,
+            # Retrocompatibilità
             "legacy_run": _legacy_run,
+            # Livello Binario, Porte Logiche & ALU
+            "bit_gate": _bit_gate,
+            "half_adder": _half_adder,
+            "full_adder": _full_adder,
+            "alu": _alu,
+            "bits_of": _bits_of,
+            "bitstr": _bitstr,
+            "from_bits": _from_bits,
+            "hex_of": lambda n: hex(int(n)),
+            # OOP Tri-Assiale Avanzato & Funzionale
+            "coords_of": _coords_of,
+            "axis_call": _axis_call,
+            "axis_broadcast": _axis_broadcast,
+            "map_list": _map_list,
+            "filter_list": _filter_list,
+            "reduce_list": _reduce_list,
+            # AI, Tensori, Autograd, Strati Neurali & Memoria Neuro-Simbolica
+            "tensor": _tensor,
+            "tensore": _tensor,
+            "matmul": lambda a, b: Tensor._ensure(a).matmul(Tensor._ensure(b)),
+            "backward": lambda t: t.backward(),
+            "zero_grad": _zero_grad,
+            "item": lambda t: t.item() if isinstance(t, Tensor) else float(t),
+            "relu": lambda t: Tensor._ensure(t).relu(),
+            "sigmoid": lambda t: Tensor._ensure(t).sigmoid(),
+            "tanh": lambda t: Tensor._ensure(t).tanh(),
+            "gelu": lambda t: Tensor._ensure(t).gelu(),
+            "softmax": lambda t: Tensor._ensure(t).softmax(),
+            "t_sum": lambda t: Tensor._ensure(t).sum(),
+            "t_mean": lambda t: Tensor._ensure(t).mean(),
+            "mse_loss": mse_loss,
+            "bce_loss": bce_loss,
+            "cross_entropy": cross_entropy_loss,
+            "nn_linear": lambda i, o, seed=42: LinearLayer(int(i), int(o), int(seed)),
+            "nn_attention": lambda d, seed=42: SelfAttentionLayer(int(d), int(seed)),
+            "nn_triaxial": lambda i, h, o, depth=2, act="sigmoid", seed=42: TriAxialNetwork(
+                int(i), int(h), int(o), int(depth), str(act), int(seed)
+            ),
+            "nn_sgd": lambda p, lr=0.05, momentum=0.0: SGDOptimizer(_params_of(p), float(lr), float(momentum)),
+            "nn_adam": lambda p, lr=0.02: AdamOptimizer(_params_of(p), float(lr)),
+            "opt_step": _opt_step,
+            "opt_zero_grad": _zero_grad,
+            "ai_memory": MindMemory,
+            "mem_store": lambda mem, k, emb, payload=None, h=0, v=0: mem.store(k, emb, payload, int(h), int(v)),
+            "mem_recall": lambda mem, q, top_k=3: mem.recall(q, int(top_k)),
+            "cosine_sim": lambda a, b: cosine_similarity(
+                MindMemory._flat_vec(a), MindMemory._flat_vec(b)
+            ),
+            "ai_pack_hex": _ai_pack_hex,
+            "ai_unpack_hex": _ai_unpack_hex,
+            "em_transmit_ai": _em_transmit_ai,
         }
         for name, fn in builtins.items():
             g(name, fn)
